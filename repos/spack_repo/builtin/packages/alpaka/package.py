@@ -21,6 +21,7 @@ class Alpaka(CMakePackage, CudaPackage):
     license("MPL-2.0-no-copyleft-exception")
 
     version("develop", branch="develop")
+    version("3.0.0", sha256="9afd1c14f445127aeeca9f29b5d17a33cdb0b9e974418a96d9f880b370b854f2")
     version("2.2.0", sha256="b38dc3f461da261a746956bd84ae85c62a9b3ef13c078c94bceb9783ae94d1f2")
     version("2.1.1", sha256="2d30a43594c55067297947b0ec83300e4f2899497464c5cc6f142c823f3ea1b2")
     # 2.1.0 is deprecated due to the buffer/view arrow operator bug
@@ -53,6 +54,14 @@ class Alpaka(CMakePackage, CudaPackage):
         ),
         description="Backends to enable",
         default="serial",
+        when="@:2",
+    )
+
+    variant(
+        "backend",
+        values=any_combination_of("hwloc", "omp", "tbb", "cuda", "hip", "oneapi"),
+        description="Backends to enable",
+        when="@3:",
     )
 
     variant("examples", default=False, description="Build alpaka examples")
@@ -62,31 +71,63 @@ class Alpaka(CMakePackage, CudaPackage):
     variant(
         "boost_atomic_ref",
         default=False,
-        when="@2:",
+        when="@2:2",
         description="To use atomic ref from boost, if C++20 std::atomic_ref is not available",
     )
-    depends_on("boost@1.74:")
-    depends_on("boost@1.78:+atomic", when="@2: +boost_atomic_ref")
+    depends_on("boost@1.74:", when="@:2")
+    depends_on("boost@1.78:+atomic", when="@2:2 +boost_atomic_ref")
 
     depends_on("cmake@3.18:")
     depends_on("cmake@3.22:", when="@1:")
     depends_on("cmake@3.25:", when="@2:")
 
+    depends_on("intel-tbb@2021.10:", when="@3: backend=tbb")
+    depends_on("hwloc@2.0:", when="@3: backend=hwloc")
+    depends_on("pkg-config", type="build", when="@3: backend=hwloc")
+    requires("%clang", when="@3: backend=omp", msg="alpaka OpenMP backend requires Clang")
+
     # make sure no other backend is enabled if using cuda_only or hip_only
     for v in ("serial", "threads", "tbb", "omp2_gridblock", "omp2_blockthread", "cuda", "hip"):
-        conflicts("backend=cuda_only,%s" % v)
-        conflicts("backend=hip_only,%s" % v)
-    conflicts("backend=cuda_only,hip_only")
+        conflicts("backend=cuda_only,%s" % v, when="@:2")
+        conflicts("backend=hip_only,%s" % v, when="@:2")
+    conflicts("backend=cuda_only,hip_only", when="@:2")
 
     # todo: add conflict between cuda 11.3 and gcc 10.3.0
     # see https://github.com/alpaka-group/alpaka/issues/1297
 
     def cmake_args(self):
+        if self.spec.satisfies("@3:"):
+            return self._cmake_args_v3()
+        return self._cmake_args_legacy()
+
+    def _cmake_args_v3(self):
+        spec = self.spec
+        args = []
+        if spec.satisfies("backend=omp"):
+            args.append(self.define("alpaka_DEP_OMP", True))
+        if spec.satisfies("backend=tbb"):
+            args.append(self.define("alpaka_DEP_TBB", True))
+        if spec.satisfies("backend=cuda"):
+            args.append(self.define("alpaka_DEP_CUDA", True))
+        if spec.satisfies("backend=hip"):
+            args.append(self.define("alpaka_DEP_HIP", True))
+        if spec.satisfies("backend=oneapi"):
+            args.append(self.define("alpaka_DEP_ONEAPI", True))
+
+        args.append(self.define_from_variant("alpaka_EXAMPLES", "examples"))
+        args.append(self.define("alpaka_TESTS", self.run_tests))
+
+        # Disable warning saying that when more than one backend is enabled,
+        # the alpaka::alpaka cmake target doesn't link the extra backends.
+        args.append(self.define("alpaka_SUPPRESS_TARGET_WARNING", True))
+        return args
+
+    def _cmake_args_legacy(self):
         spec = self.spec
         args = []
         if spec.satisfies("backend=serial"):
             args.append(self.define("ALPAKA_ACC_CPU_B_SEQ_T_SEQ_ENABLE", True))
-        if self.spec.satisfies("backend=threads"):
+        if spec.satisfies("backend=threads"):
             args.append(self.define("ALPAKA_ACC_CPU_B_SEQ_T_THREADS_ENABLE", True))
         if spec.satisfies("backend=tbb"):
             args.append(self.define("ALPAKA_ACC_CPU_B_TBB_T_SEQ_ENABLE", True))
